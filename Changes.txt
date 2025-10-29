@@ -1,0 +1,126 @@
+# Changes Made to the Verification Playground Codebase
+
+## Overview
+This document provides a comprehensive list of all changes made to the Verification Playground codebase, including file creation, modifications, and structural improvements.
+
+## Directory Structure Changes
+
+1. Created proper directory structure for Django best practices:
+   - Created `verif_play_ground/static/` directory for static files
+   - Created `verif_play_ground/templates/` directory for HTML templates
+   - Created `verif_play_ground/media/` directory for user-uploaded files
+   - Added `.gitkeep` files to ensure empty directories are tracked in git
+
+## New Files Created
+
+1. **README.md**
+   - Created a comprehensive README file with detailed documentation
+   - Includes installation instructions, usage guide, API documentation, and troubleshooting tips
+   - Added AWS EC2 deployment instructions with sudo commands
+
+2. **run.sh**
+   - Created a convenience script to easily start the development server
+   - Made executable with `chmod +x run.sh`
+
+3. **verif_play_ground/static/css/style.css**
+   - Created a CSS file for styling the application
+   - Includes styles for the home page and API documentation
+
+4. **verif_play_ground/templates/index.html**
+   - Created a home page template that displays information about the available API endpoints
+   - Includes links to API documentation
+
+5. **verif_play_ground/static/.gitkeep**
+   - Added to ensure the static directory is tracked in git
+
+6. **verif_play_ground/templates/.gitkeep**
+   - Added to ensure the templates directory is tracked in git
+
+7. **verif_play_ground/media/.gitkeep**
+   - Added to ensure the media directory is tracked in git
+
+8. **create_test_excel.py**
+   - Created a script to generate a test Excel file for API testing
+   - Includes sample register definitions for UVM RAL generation
+
+9. **changes.txt**
+   - Created this document to track all changes made to the codebase
+
+## Modified Files
+
+1. **requirements.txt**
+   - Updated with all necessary dependencies
+   - Added django-cors-headers and matplotlib
+   - Froze exact versions of all dependencies
+
+2. **verif_play_ground/settings.py**
+   - Added configuration for static files, media files, and templates
+   - Updated STATICFILES_DIRS, STATIC_ROOT, and MEDIA_ROOT settings
+   - Added TEMPLATES configuration to include the templates directory
+
+3. **verif_play_ground/urls.py**
+   - Added URL pattern for the home page
+   - Added configuration to serve static and media files in development
+   - Added proper imports for the home view
+   - Fixed import statements and removed unused imports
+
+4. **verif_play_ground_app/views.py**
+   - Added a home view function to render the index.html template
+   - Added proper imports for the home view
+   - Added ValidationError import for better error handling
+   - Improved code formatting and organization
+
+5. **.gitignore**
+   - Updated to exclude Django-specific files
+   - Added entries for static files, media files, and database files
+
+## Bug Fixes
+
+1. Fixed missing ValidationError import in views.py
+2. Fixed unused imports in urls.py
+3. Fixed port conflict issues by providing instructions to run on different ports
+4. Added proper error handling for API endpoints
+
+## Testing
+
+1. Created test data for API testing
+2. Tested all API endpoints:
+   - UVM RAL Generator API
+   - UVM RAL Generator Base64 API
+   - System Block Diagram Generator API
+3. Verified error handling for all APIs
+4. Added API testing instructions to the README
+
+## Documentation Improvements
+
+1. Created a comprehensive README.md with:
+   - Detailed project overview and features
+   - Installation instructions for local development
+   - AWS EC2 deployment guide with sudo commands
+   - API documentation with request/response formats
+   - API testing guide with example commands
+   - Troubleshooting guide for common issues
+   - Excel file format documentation for UVM RAL generation
+
+2. Added inline comments to code for better understanding
+
+## Deployment Improvements
+
+1. Added AWS EC2 deployment instructions
+2. Added production deployment configuration with Gunicorn and Nginx
+3. Added systemd service configuration for Gunicorn
+4. Added Nginx configuration for serving the application
+5. Added firewall configuration instructions
+
+## Summary of Changes
+
+The codebase has been significantly improved with:
+- Better organization and structure
+- Comprehensive documentation
+- Proper static and media file handling
+- A user-friendly home page
+- Detailed deployment instructions
+- Thorough testing of all APIs
+- Bug fixes and error handling improvements
+
+These changes make the application more robust, easier to use, and simpler to deploy in both development and production environments.

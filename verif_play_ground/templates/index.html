@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Verification Playground</title>
+    {% load static %}
+    <link rel="stylesheet" href="{% static 'css/style.css' %}">
+</head>
+<body>
+    <h1>Verification Playground</h1>
+    <p>A Django-based web application for hardware verification tools.</p>
+
+    <h2>Available API Endpoints</h2>
+
+    <div class="endpoint">
+        <h3>UVM RAL Generator</h3>
+        <p>Generate UVM Register Abstraction Layer (RAL) models from Excel files.</p>
+        <p><strong>Endpoint:</strong> <code>/generate-uvm-ral/</code></p>
+        <p><strong>Method:</strong> POST</p>
+        <p><strong>Returns:</strong> .sv file</p>
+    </div>
+
+    <div class="endpoint">
+        <h3>UVM RAL Generator (Base64)</h3>
+        <p>Generate UVM Register Abstraction Layer (RAL) models from Excel files.</p>
+        <p><strong>Endpoint:</strong> <code>/generate-uvm-ral-base/</code></p>
+        <p><strong>Method:</strong> POST</p>
+        <p><strong>Returns:</strong> Base64 encoded content</p>
+    </div>
+
+    <div class="endpoint">
+        <h3>System Block Diagram Generator</h3>
+        <p>Generate a system block diagram based on input and output counts.</p>
+        <p><strong>Endpoint:</strong> <code>/drawSystemBlockAPIView/</code></p>
+        <p><strong>Method:</strong> POST</p>
+        <p><strong>Parameters:</strong> input_count, output_count</p>
+        <p><strong>Returns:</strong> PNG image</p>
+    </div>
+</body>
+</html>

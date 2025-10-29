@@ -1,0 +1,220 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Translations
+*.mo
+*.pot
+
+# Django specific
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+static/
+media/
+staticfiles/
+.webassets-cache
+
+## Scrapy
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+.pybuilder/
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# Python environment management
+## pyenv
+.python-version
+
+## pipenv
+Pipfile.lock
+
+## pdm
+pdm.lock
+.pdm.toml
+
+## PEP 582
+__pypackages__/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+#requirements.txt
+requirements.txt
+
+# IDE and editor settings
+## Spyder
+.spyderproject
+.spyproject
+
+## Rope
+.ropeproject
+
+## VS Code
+.vscode/
+*.swp
+*.swo
+
+# Documentation
+## mkdocs
+/site
+
+# Type checkers and static analysis
+## mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+## Pyre
+.pyre/
+
+## pytype
+.pytype/
+
+# Debugging and profiling
+cython_debug/
+
+# TensorFlow/Keras files
+checkpoints/
+*.ckpt
+*.h5
+*.pb
+logs/
+tensorboard_logs/
+
+# Large data files
+video_meta/
+*.npz
+*.h5
+*.hdf5
+*.tflite
+*.pbtxt
+*.pb
+
+# Miscellaneous large files
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# Node modules
+node_modules/
+
+# Build output
+build/
+dist/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment variable files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Dependency directories
+.pnp/
+.pnp.js
+
+# Operating System files
+.DS_Store
+Thumbs.db
+
+# Coverage directory used by tools like Istanbul
+coverage/
+
+# Test output
+test-results/
+__tests__/
+*.coverage
+*.lcov
+
+# Miscellaneous files
+*.pem
+*.gz
+*.zip
+*.tar
+*.tgz
+
+# React Native
+.expo/
+*.expo/
+
+# Fiases index files
+faiss-index/
+*.fiases

@@ -4,7 +4,7 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
 from .utils import *
-from django.http import FileResponse, JsonResponse
+from django.http import FileResponse, JsonResponse, HttpResponse
 from django.shortcuts import render
 import base64
 import os
@@ -17,9 +17,13 @@ from rest_framework.exceptions import ValidationError
 from bson import ObjectId
 from datetime import datetime
 import re
-
-
-
+import shutil
+import tempfile
+import subprocess
+import pandas as pd
+from rest_framework import status
+import colorsys
+import random
 
 def home(request):
     """Render the home page"""
@@ -288,7 +292,138 @@ class WaveformGeneratorAPIView(APIView):
 
 
 
+MERMAID_THEME = "default"
 
+class MermaidCircuitAPIView(APIView):
+    parser_classes = (MultiPartParser, FormParser)
+
+    def post(self, request, *args, **kwargs):
+        file_obj = request.FILES.get("file")
+        out_format = request.data.get("format", "png").lower()
+
+        if not file_obj:
+            return Response({"error": "No file uploaded"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if out_format not in ["png", "jpg"]:
+            return Response({"error": "Invalid format, choose 'png' or 'jpg'"},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            df = pd.read_excel(file_obj)
+
+            required_columns = {"Node", "Connects_To"}
+            if not required_columns.issubset(df.columns):
+                return Response({
+                    "error": f"Excel must contain at least these columns: {required_columns}"
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            mmd_text = self._generate_mermaid(df)
+
+            image_data, content_type = self._render_mermaid(mmd_text, out_format)
+            return HttpResponse(image_data, content_type=content_type)
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def _slug(self, label: str) -> str:
+        """Make safe IDs for Mermaid nodes."""
+        s = re.sub(r"\W+", "_", str(label).strip())
+        if not re.match(r"^[A-Za-z]", s):
+            s = "N_" + s
+        return s
+      
+    def _generate_color_palette(self, n: int):
+        """Generate visually distinct colors (HSL-based)."""
+        colors = []
+        for i in range(n):
+            hue = i / n
+            lightness = 0.75
+            saturation = 0.7
+            r, g, b = colorsys.hls_to_rgb(hue, lightness, saturation)
+            colors.append('#%02x%02x%02x' % (int(r * 255), int(g * 255), int(b * 255)))
+        return colors
+
+
+    def _generate_mermaid(self, df: pd.DataFrame) -> str:
+        lines = ["flowchart TB"]
+
+        nodes = set()
+        edges = []
+
+        for _, row in df.iterrows():
+            a = str(row["Node"]).strip()
+            b = str(row["Connects_To"]).strip() if pd.notna(row["Connects_To"]) else ""
+            if a: nodes.add(a)
+            if b: nodes.add(b)
+            if a and b:
+                edges.append((a, b))
+
+        # 🎨 Generate dynamic color classes
+        unique_labels = sorted(list(nodes))
+        palette = self._generate_color_palette(len(unique_labels))
+        label_to_class = {lbl: f"cls_{self._slug(lbl)}" for lbl in unique_labels}
+        label_to_color = {lbl: col for lbl, col in zip(unique_labels, palette)}
+
+        # 🧱 Add nodes
+        for n in nodes:
+            nid = self._slug(n)
+            cls = label_to_class[n]
+            safe_label = n.replace('"', '&quot;').replace("'", "&#39;")
+            lines.append(f'{nid}["{safe_label}"]:::{cls}')
+
+        # 🔗 Add edges
+        for a, b in edges:
+            lines.append(f"{self._slug(a)} --> {self._slug(b)}")
+
+        # 🖌️ Add class definitions (dynamic colors)
+        lines.append("")  # spacing
+        for n in unique_labels:
+            color = label_to_color[n]
+            cls = label_to_class[n]
+            lines.append(f"classDef {cls} fill:{color},stroke:#000,color:#000000;")
+
+        return "\n".join(line.strip() for line in lines if line.strip())
+
+    def _render_mermaid(self, mmd_text: str, out_format: str):
+        with tempfile.TemporaryDirectory() as td:
+            in_path = os.path.join(td, "diagram.mmd")
+            out_ext = "png" if out_format == "png" else "jpg"
+            out_path = os.path.join(td, f"diagram.{out_ext}")
+
+            with open(in_path, "w", encoding="utf-8") as f:
+                f.write(mmd_text)
+
+            mmdc_path = shutil.which("mmdc") or shutil.which("mmdc.cmd")
+            if not mmdc_path:
+                raise FileNotFoundError("Mermaid CLI (mmdc) not found. Install globally: npm install -g @mermaid-js/mermaid-cli")
+
+            # Run and capture error
+            result = subprocess.run(
+                [mmdc_path, "-i", in_path, "-o", out_path, "-t", MERMAID_THEME, "-b", "transparent"],
+                capture_output=True,
+                text=True
+            )
+
+            if result.returncode != 0:
+                debug_path = os.path.join(td, "debug_diagram.mmd")
+                with open(debug_path, "w", encoding="utf-8") as dbg:
+                    dbg.write(mmd_text)
+
+                raise RuntimeError(
+                    f"Mermaid render failed with code {result.returncode}\n"
+                    f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}\n\n"
+                    f"Mermaid input was saved at: {debug_path}\n"
+                    f"Generated Mermaid code:\n"
+                    f"---\n"
+                    f"{mmd_text}\n"
+                    f"---"
+                )
+
+            with open(out_path, "rb") as f:
+                blob = f.read()
+
+            content_type = "image/png" if out_ext == "png" else "image/jpeg"
+            return blob, content_type
 
 
 

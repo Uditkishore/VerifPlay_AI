@@ -29,6 +29,7 @@ urlpatterns = [
     path('api/chat', ChatAPIView.as_view(), name='chat'),
     path("simulate/mux/download-excel", MuxSimulationExcelDownloadAPIView.as_view(), name="mux-sim-excel"),
     path("api/generate-waveform", WaveformGeneratorAPIView.as_view(), name="generate-waveform"),
+    path('api/circuit', MermaidCircuitAPIView.as_view(), name='generate_diagram'),
 
 ]
 

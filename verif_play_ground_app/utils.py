@@ -336,7 +336,9 @@ def initialize_mongodb_vector_db():
 # LLM Initialization
 def initialize_llm():
     try:
-        model_path = os.path.join("chatbot/models", "mistral-7b-instruct-v0.1.Q4_K_M.gguf")
+        model_path = "chatbot/models/mistral-7b-instruct-v0.1.Q4_K_M.gguf"
+        if not os.path.exists(model_path):
+            print(f"❌ Model not found at {model_path}")
         return Llama(
             model_path=model_path,
             n_ctx=32768,
@@ -352,6 +354,7 @@ def initialize_llm():
 try:
     retriever = initialize_mongodb_vector_db()
     llm = initialize_llm()
+    print("✅ Chatbot models loaded successfully!")
 except Exception as e:
     print(f"❌ Error initializing chatbot components: {str(e)}")
     retriever = None

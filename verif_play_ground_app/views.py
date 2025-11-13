@@ -24,6 +24,7 @@ import pandas as pd
 from rest_framework import status
 import colorsys
 import random
+from typing import List, Dict, Tuple, Optional, Any
 
 def home(request):
     """Render the home page"""
@@ -425,11 +426,115 @@ class MermaidCircuitAPIView(APIView):
             content_type = "image/png" if out_ext == "png" else "image/jpeg"
             return blob, content_type
 
+backend = VerilogBackend()  # single instance for app lifetime
+
+class UploadFileView(APIView):
+    parser_classes = (MultiPartParser, FormParser)
+
+    def post(self, request, *args, **kwargs):
+        f = request.FILES.get("file")
+        if not f:
+            return Response({"status": "error", "message": "No file provided (field 'file')"}, status=status.HTTP_400_BAD_REQUEST)
+        key = backend.save_uploaded_file(f.name, f.read())
+        preview = backend.get_saved_file(key)[:1000] if backend.get_saved_file(key) else ""
+        return Response({"status": "ok", "file_key": key, "filename": f.name, "preview": preview}, status=status.HTTP_201_CREATED)
+
+class ExplainCodeView(APIView):
+    def post(self, request, *args, **kwargs):
+        file_key = request.data.get("file_key", "")
+        code = request.data.get("code", "")
+        src = file_key or code
+        res = backend.explain_code(src)
+        status_code = status.HTTP_200_OK if res.get("status") == "ok" else status.HTTP_400_BAD_REQUEST
+        return Response(res, status=status_code)
+
+class GenerateTestbenchView(APIView):
+    def post(self, request, *args, **kwargs):
+        file_key = request.data.get("file_key", "")
+        code = request.data.get("code", "")
+        mode = request.query_params.get("mode", "auto")
+        src = file_key or code
+        res = backend.generate_testbench(src, mode=mode)
+        status_code = status.HTTP_200_OK if res.get("status") == "ok" else status.HTTP_400_BAD_REQUEST
+        return Response(res, status=status_code)
 
 
+class GenerateUVMView(APIView):
+    def post(self, request, *args, **kwargs):
+        file_key = request.data.get("file_key", "")
+        code = request.data.get("code", "")
+        src = file_key or code
+        res = backend.generate_uvm_testbench(src)
+        status_code = status.HTTP_200_OK if res.get("status") == "ok" else status.HTTP_400_BAD_REQUEST
+        return Response(res, status=status_code)
 
+class DesignReportView(APIView):
+    def post(self, request, *args, **kwargs):
+        file_key = request.data.get("file_key", "")
+        code = request.data.get("code", "")
+        src = file_key or code
+        res = backend.generate_design_report(src)
+        return Response(res)
 
+class CopyContentView(APIView):
+    def post(self, request, *args, **kwargs):
+        file_key = request.data.get("file_key", "")
+        code = request.data.get("code", "")
+        kind = request.data.get("kind", "code")  # 'code'|'explanation'|'testbench'
+        src = file_key or code
+        res = backend.copy_content(src, kind=kind)
+        status_code = status.HTTP_200_OK if res.get("status") in ("ok",) else status.HTTP_400_BAD_REQUEST
+        return Response(res, status=status_code)
 
+class ClearAllView(APIView):
+    def delete(self, request, *args, **kwargs):
+        res = backend.clear_all()
+        return Response(res)
 
+class HighlightView(APIView):
+    def post(self, request, *args, **kwargs):
+        file_key = request.data.get("file_key", "")
+        code = request.data.get("code", "")
+        src = file_key or code
+        res = backend.highlight_code(src)
+        return Response(res)
 
-    
+class NextChunkView(APIView):
+    def post(self, request, *args, **kwargs):
+        key = request.data.get("file_key")
+        if not key:
+            return Response({"status": "error", "message": "file_key required"}, status=status.HTTP_400_BAD_REQUEST)
+        offset = int(request.data.get("offset", 0))
+        chunk_size = int(request.data.get("chunk_size", 10000))
+        res = backend.apply_next_chunk(key, offset=offset, chunk_size=chunk_size)
+        return Response(res)
+
+class AddChunkView(APIView):
+    def post(self, request, *args, **kwargs):
+        key = request.data.get("file_key")
+        chunk_text = request.data.get("chunk_text", "")
+        if not key:
+            return Response({"status": "error", "message": "file_key required"}, status=status.HTTP_400_BAD_REQUEST)
+        res = backend.add_chunk(key, chunk_text)
+        return Response(res)
+
+class UpdateCodeView(APIView):
+    def post(self, request, *args, **kwargs):
+        key = request.data.get("file_key")
+        new_code = request.data.get("new_code", "")
+        if not key:
+            return Response({"status": "error", "message": "file_key required"}, status=status.HTTP_400_BAD_REQUEST)
+        res = backend.on_code_change(key, new_code)
+        return Response(res)
+
+class FindTextView(APIView):
+    def post(self, request, *args, **kwargs):
+        file_key = request.data.get("file_key", "")
+        code = request.data.get("code", "")
+        query = request.data.get("query")
+        if not query:
+            return Response({"status": "error", "message": "query required"}, status=status.HTTP_400_BAD_REQUEST)
+        src = file_key or code
+        max_results = int(request.data.get("max_results", 50))
+        res = backend.find_text(src, query, max_results=max_results)
+        return Response(res)

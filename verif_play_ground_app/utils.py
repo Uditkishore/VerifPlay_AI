@@ -16,7 +16,7 @@ from langchain_community.vectorstores import Chroma
 from langchain.embeddings.base import Embeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from llama_cpp import Llama
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any, Tuple
 import json
 import shutil
 import subprocess
@@ -24,6 +24,9 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 import time
 from chatbot.offline_loader import *
 from transformers import GPT2TokenizerFast
+import tiktoken
+from datetime import datetime
+import difflib
 
 def parse_field(field_str):
     """
@@ -291,6 +294,14 @@ def process_mongodb_document(doc: Dict) -> Optional[Document]:
     except Exception as e:
         print(f"Error processing document {doc.get('_id')}: {str(e)}")
         return None
+    
+def count_tokens(text: str) -> int:
+    try:
+        enc = tiktoken.get_encoding("cl100k_base")
+        return len(enc.encode(text))
+    except Exception:
+        return 0
+
 
 # ⏱️ Vector DB Initialization
 def initialize_mongodb_vector_db():
@@ -441,9 +452,20 @@ USER QUESTION: {query}
 DETAILED ANSWER:"""
 
         # Generate response with higher token limit for more detailed answers
+        prompt_tokens = count_tokens(prompt)
+        # max_allowed_tokens = 2000  # your total limit (safe for llama-cpp)
+        max_gen_tokens = prompt_tokens
+
+        # Ensure positive value
+        if max_gen_tokens < 200:
+            max_gen_tokens = 200
+
+        print(f"[TOKEN DEBUG] Prompt tokens = {prompt_tokens}, Generating = {max_gen_tokens}")
+
         response = llm(
             prompt,
-            max_tokens=1024,  # Increased from 512 for more detailed responses
+            # max_tokens=1024,  # Increased from 512 for more detailed responses
+            max_tokens=max_gen_tokens,
             temperature=0.3,  # Lower temperature for more focused answers
             stop=["</s>"]
         )
@@ -670,3 +692,558 @@ def generate_waveform_from_excel(file_obj):
         return {"error": f"Error generating waveform image: {str(e)}"}
     except Exception as e:
         return {"error": f"Unexpected error: {str(e)}"}
+
+
+# In-memory store for uploaded files and derived state
+_STORE: Dict[str, Dict[str, Any]] = {}
+
+
+class VerilogBackend:
+    def __init__(self, store: Dict[str, Dict[str, Any]] = None, persist_folder: Optional[str] = None):
+        self.store = store if store is not None else _STORE
+        self.persist_folder = persist_folder
+        if self.persist_folder:
+            os.makedirs(self.persist_folder, exist_ok=True)
+
+    # -----------------------------
+    # File store helpers
+    # -----------------------------
+    def save_uploaded_file(self, filename: str, data: bytes) -> str:
+        """Save uploaded file bytes -> store key"""
+        if isinstance(data, bytes):
+            try:
+                text = data.decode("utf-8", errors="ignore")
+            except Exception:
+                text = data.decode("latin1", errors="ignore")
+        else:
+            text = str(data)
+
+        key = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{os.path.basename(filename)}"
+        self.store[key] = {
+            "filename": filename,
+            "content": text,
+            "saved_at": datetime.utcnow().isoformat(),
+            # caches / editor state:
+            "highlight_html": None,
+            "last_explanation": None
+        }
+
+        if self.persist_folder:
+            path = os.path.join(self.persist_folder, key)
+            with open(path, "w", encoding="utf-8", errors="ignore") as f:
+                f.write(text)
+
+        return key
+
+    def get_saved_file(self, key: str) -> Optional[str]:
+        it = self.store.get(key)
+        return it.get("content") if it else None
+
+    # -----------------------------
+    # Resolve code input
+    # -----------------------------
+    def _resolve(self, source_or_key: str) -> str:
+        if not source_or_key:
+            return ""
+        if source_or_key in self.store:
+            return self.store[source_or_key]["content"]
+        return str(source_or_key)
+
+    # -----------------------------
+    # Explain / parse / report
+    # -----------------------------
+    def explain_code(self, source_or_key: str) -> Dict[str, Any]:
+        code = self._resolve(source_or_key).strip()
+        if not code:
+            return {"status": "error", "message": "No code provided", "explanation": ""}
+
+        modules = self._fast_extract_modules_optimized(code)
+        explanation = self._generate_explanation_optimized(code, modules)
+        # cache last explanation if key
+        if source_or_key in self.store:
+            self.store[source_or_key]["last_explanation"] = explanation
+
+        return {"status": "ok", "module_count": len(modules), "modules": [{"name": m["name"]} for m in modules],
+                "explanation": explanation}
+
+    def generate_testbench(self, source_or_key: str, mode: str = "auto") -> Dict[str, Any]:
+        code = self._resolve(source_or_key)
+        modules = self._fast_extract_modules_optimized(code)
+        if not modules:
+            return {"status": "error", "message": "No modules found", "testbench": ""}
+
+        info = self._extract_detailed_module_info(code) or {"module_name": modules[0]["name"], "inputs": [], "outputs": [], "inouts": [], "parameters": []}
+        is_apb, signals = self._detect_apb_protocol(code[:20000])
+        if mode == "apb" or (mode == "auto" and is_apb):
+            tb = self._build_apb_testbench(info, signals)
+            kind = "apb"
+        else:
+            tb = self._build_comprehensive_testbench(info)
+            kind = "simple"
+        return {"status": "ok", "module": info.get("module_name"), "type": kind, "testbench": tb}
+
+    def generate_uvm_testbench(self, source_or_key: str) -> Dict[str, Any]:
+        code = self._resolve(source_or_key)
+        info = self._extract_detailed_module_info(code)
+        if not info:
+            modules = self._fast_extract_modules_optimized(code)
+            if not modules:
+                return {"status": "error", "message": "No modules found", "testbench": ""}
+            info = {"module_name": modules[0]["name"], "inputs": [], "outputs": [], "inouts": [], "parameters": []}
+        tb = self._build_uvm_testbench(info)
+        return {"status": "ok", "module": info.get("module_name"), "testbench": tb}
+
+    def generate_design_report(self, source_or_key: str) -> Dict[str, Any]:
+        code = self._resolve(source_or_key)
+        modules = self._fast_extract_modules_optimized(code)
+        sample = code[:200000]
+        total_lines = len(code.splitlines())
+        always_count = len(re.findall(r'always\s*@', sample))
+        assign_count = len(re.findall(r'\bassign\b', sample))
+        instance_count = len(re.findall(r'(\w+)\s+(\w+)\s*\(', sample))
+        module_summaries = []
+        for m in modules[:50]:
+            insts = re.findall(r'\b(\w+)\s+(\w+)\s*\(', m["text"][:20000])
+            module_summaries.append({"name": m["name"], "instances": len(insts), "snippet": m["text"][:400]})
+        top = max(module_summaries, key=lambda x: x["instances"])["name"] if module_summaries else None
+        return {
+            "status": "ok",
+            "total_lines": total_lines,
+            "module_count": len(modules),
+            "instance_count_sampled": instance_count,
+            "assign_count_sampled": assign_count,
+            "always_count_sampled": always_count,
+            "top_module_candidate": top,
+            "modules": module_summaries
+        }
+
+    # -----------------------------
+    # Copy / Clear / Append / Chunks / Editor helpers
+    # -----------------------------
+    def copy_content(self, source_or_key: str, kind: str = "code") -> Dict[str, Any]:
+        """
+        Return the requested content to be 'copied' by client.
+        kind: 'code' or 'explanation' or 'testbench'
+        """
+        if kind == "explanation":
+            if source_or_key in self.store and self.store[source_or_key].get("last_explanation"):
+                return {"status": "ok", "content": self.store[source_or_key]["last_explanation"]}
+            else:
+                # generate on-the-fly
+                res = self.explain_code(source_or_key)
+                return {"status": res.get("status", "error"), "content": res.get("explanation", "")}
+        elif kind == "testbench":
+            res = self.generate_testbench(source_or_key)
+            return {"status": res.get("status", "error"), "content": res.get("testbench", "")}
+        else:
+            # kind == 'code' default
+            content = self._resolve(source_or_key)
+            return {"status": "ok" if content else "error", "content": content}
+
+    def clear_all(self) -> Dict[str, Any]:
+        """Clear the in-memory store entirely."""
+        self.store.clear()
+        return {"status": "ok", "message": "Store cleared"}
+
+    def add_chunk(self, key: str, chunk_text: str) -> Dict[str, Any]:
+        """Append chunk_text to an existing stored file."""
+        if key not in self.store:
+            return {"status": "error", "message": "Key not found"}
+        self.store[key]["content"] += str(chunk_text)
+        if self.persist_folder:
+            try:
+                path = os.path.join(self.persist_folder, key)
+                with open(path, "a", encoding="utf-8", errors="ignore") as f:
+                    f.write(str(chunk_text))
+            except Exception:
+                pass
+        return {"status": "ok", "new_length": len(self.store[key]["content"])}
+
+    def apply_next_chunk(self, key: str, offset: int = 0, chunk_size: int = 10000) -> Dict[str, Any]:
+        """Return the next chunk from stored content starting at offset. Useful for streaming UI."""
+        content = self.get_saved_file(key)
+        if content is None:
+            return {"status": "error", "message": "Key not found"}
+        total = len(content)
+        if offset >= total:
+            return {"status": "ok", "chunk": "", "next_offset": total, "done": True}
+        end = min(total, offset + chunk_size)
+        chunk = content[offset:end]
+        done = end >= total
+        return {"status": "ok", "chunk": chunk, "next_offset": end, "done": done, "total": total}
+
+    def update_line_numbers(self, source_or_key: str) -> Dict[str, Any]:
+        """Return the count of lines and a small preview of numbered lines."""
+        content = self._resolve(source_or_key)
+        lines = content.splitlines()
+        count = len(lines)
+        preview_lines = []
+        max_preview = 10
+        for i in range(min(count, max_preview)):
+            preview_lines.append({"ln": i + 1, "text": lines[i][:200]})
+        return {"status": "ok", "lines": count, "preview": preview_lines}
+
+    def on_code_change(self, key: str, new_code: str) -> Dict[str, Any]:
+        """
+        Update stored code and return a small unified diff preview.
+        If key not present, create a new stored item with filename=key.
+        """
+        old = self.get_saved_file(key) or ""
+        self.store.setdefault(key, {"filename": key, "content": "", "saved_at": datetime.utcnow().isoformat()})
+        self.store[key]["content"] = new_code
+        self.store[key]["saved_at"] = datetime.utcnow().isoformat()
+        # compute small diff
+        old_lines = old.splitlines(keepends=False)
+        new_lines = new_code.splitlines(keepends=False)
+        diff = list(difflib.unified_diff(old_lines[:200], new_lines[:200], lineterm=""))
+        diff_preview = "\n".join(diff[:200])
+        return {"status": "ok", "diff_preview": diff_preview}
+
+    def find_text(self, source_or_key: str, query: str, max_results: int = 50) -> Dict[str, Any]:
+        """Return occurrences (line numbers + small context) for query string or regex."""
+        content = self._resolve(source_or_key)
+        if not content:
+            return {"status": "error", "message": "No content"}
+        lines = content.splitlines()
+        results = []
+        pattern = None
+        is_regex = False
+        try:
+            pattern = re.compile(query)
+            is_regex = True
+        except re.error:
+            pattern = None
+            is_regex = False
+
+        for idx, line in enumerate(lines, start=1):
+            if is_regex:
+                if pattern.search(line):
+                    results.append({"line": idx, "text": line.strip()})
+            else:
+                if query in line:
+                    results.append({"line": idx, "text": line.strip()})
+            if len(results) >= max_results:
+                break
+        return {"status": "ok", "occurrences": len(results), "results": results}
+
+    # -----------------------------
+    # Syntax highlighting (backend HTML)
+    # -----------------------------
+    def highlight_code(self, source_or_key: str) -> Dict[str, Any]:
+        """Return a simple HTML highlighted version of the code (not exhaustive)."""
+        code = self._resolve(source_or_key)
+        if not code:
+            return {"status": "error", "html": ""}
+
+        html = self._highlight_syntax(code)
+        # cache if key
+        if source_or_key in self.store:
+            self.store[source_or_key]["highlight_html"] = html
+        return {"status": "ok", "html": html}
+
+    def _highlight_syntax(self, code: str) -> str:
+        """
+        Very small syntax highlighter for Verilog-like code.
+        Returns HTML string with <span class="kw">..</span> etc.
+        """
+        # escape HTML
+        esc = lambda s: (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+        # simple tokenization: comments, strings, keywords, numbers
+        # 1) protect multiline comments and single-line
+        code_escaped = esc(code)
+
+        # mark multiline comments
+        code_escaped = re.sub(r'(/\*.*?\*/)', r'<span class="comment">\1</span>', code_escaped, flags=re.DOTALL)
+        # single line comments
+        code_escaped = re.sub(r'(//.*?$)', r'<span class="comment">\1</span>', code_escaped, flags=re.MULTILINE)
+
+        # strings
+        code_escaped = re.sub(r'(\".*?\")', r'<span class="str">\1</span>', code_escaped)
+
+        # keywords (a small set)
+        keywords = r'\b(module|endmodule|input|output|inout|wire|reg|logic|always|assign|if|else|begin|end|parameter|module)\b'
+        code_escaped = re.sub(keywords, r'<span class="kw">\1</span>', code_escaped)
+
+        # numbers
+        code_escaped = re.sub(r'\b(\d+\'[bdhBDH]?[0-9a-fA-FxXzZ_]+|\d+)\b', r'<span class="num">\1</span>', code_escaped)
+
+        # wrap in pre
+        styles = (
+            "<style>"
+            ".kw{color:#d73a49;font-weight:600} "
+            ".comment{color:#6a9955} "
+            ".str{color:#032f62} "
+            ".num{color:#005cc5} "
+            "pre{white-space:pre-wrap;font-family:Consolas,monospace;background:#0b0b0b;color:#cfd0d1;padding:12px;border-radius:6px}"
+            "</style>"
+        )
+        html = f"{styles}<pre>{code_escaped}</pre>"
+        return html
+
+    # -----------------------------
+    # Internal parsing functions (adapted)
+    # -----------------------------
+    def _fast_extract_modules_optimized(self, code: str) -> List[Dict[str, str]]:
+        modules = []
+        lines = code.splitlines()
+        n = len(lines)
+        MAX_LINES = 200000
+        if n > MAX_LINES:
+            lines = lines[:MAX_LINES]
+            n = MAX_LINES
+        inside = False
+        buf = []
+        name = ""
+        module_count = 0
+        MAX_MODULES = 500
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if not inside and stripped.startswith("module"):
+                inside = True
+                buf = [line]
+                m = re.match(r"module\s+(\w+)", stripped)
+                name = m.group(1) if m else "unknown"
+                continue
+            if inside:
+                buf.append(line)
+                if stripped.startswith("endmodule"):
+                    inside = False
+                    modules.append({"name": name, "text": "\n".join(buf)})
+                    module_count += 1
+                    buf = []
+                    name = ""
+                    if module_count >= MAX_MODULES:
+                        break
+        return modules
+
+    def _generate_explanation_optimized(self, code: str, modules: List[Dict[str, str]]) -> str:
+        lines = []
+        lines.append(f"EXPLANATION GENERATED: {datetime.utcnow().isoformat()}")
+        lines.append("=" * 60)
+        lines.append("")
+        if not modules:
+            lines.append("No modules detected.")
+            return "\n".join(lines)
+        lines.append(f"MODULES DETECTED: {len(modules)}")
+        for m in modules:
+            lines.append(f"  - {m['name']}")
+        lines.append("")
+        module_data = []
+        for idx, mod in enumerate(modules):
+            text = mod["text"]
+            insts = re.findall(r'\b(\w+)\s+(\w+)\s*\(', text[:50000])
+            header_match = re.search(r'\((.*?)\);', text[:2000], flags=re.DOTALL)
+            port_block = header_match.group(1) if header_match else ""
+            inputs = len(re.findall(r'\binput\b', port_block))
+            outputs = len(re.findall(r'\boutput\b', port_block))
+            inouts = len(re.findall(r'\binout\b', port_block))
+            module_data.append({"name": mod["name"], "inputs": inputs, "outputs": outputs, "inouts": inouts, "instances": insts[:10], "instance_count": len(insts)})
+        if module_data:
+            top = max(module_data, key=lambda x: x["instance_count"])
+            lines.append(f"TOP MODULE: {top['name']}")
+            lines.append(f"Instances inside: {top['instance_count']}")
+            lines.append("")
+        lines.append("MODULE DETAILS:")
+        for m in module_data:
+            lines.append("-" * 54)
+            lines.append(f"MODULE: {m['name']}")
+            lines.append(f"  Inputs     : {m['inputs']}")
+            lines.append(f"  Outputs    : {m['outputs']}")
+            lines.append(f"  Inouts     : {m['inouts']}")
+            lines.append(f"  Instances  : {m['instance_count']}")
+            for inst in m["instances"]:
+                lines.append(f"      - {inst[0]} {inst[1]}")
+            lines.append("")
+        # simple metrics
+        sample = code[:100000]
+        always_count = len(re.findall(r'always\s*@', sample))
+        assign_count = len(re.findall(r'\bassign\b', sample))
+        total = len(code.splitlines())
+        lines.append("DESIGN METRICS:")
+        lines.append(f"  Total lines: {total}")
+        lines.append(f"  always@* (sampled):   {always_count}")
+        lines.append(f"  assign (sampled):     {assign_count}")
+        return "\n".join(lines)
+
+    # Reuse the comprehensive builders from earlier adapted versions
+    def _extract_detailed_module_info(self, code: str) -> Optional[Dict[str, Any]]:
+        cleaned = re.sub(r"//.*?$", "", code, flags=re.MULTILINE)
+        cleaned = re.sub(r"/\*.*?\*/", "", cleaned, flags=re.DOTALL)
+        cleaned = cleaned.replace("\r", " ")
+        module_pat = re.compile(
+            r"module\s+(\w+)\s*"
+            r"(#\s*\((.*?)\))?\s*"
+            r"\((.*?)\)\s*;",
+            re.DOTALL | re.MULTILINE
+        )
+        m = module_pat.search(cleaned)
+        if not m:
+            return None
+        module_name = m.group(1)
+        param_block = m.group(3) or ""
+        port_block = m.group(4) or ""
+        info = {"module_name": module_name, "parameters": [], "inputs": [], "outputs": [], "inouts": [], "clock": None, "reset": None, "addr_width": None, "data_width": None, "optional_apb": {"slverr": False, "pstrb": False, "pprot": False}}
+        # params
+        for pm in re.finditer(r"parameter\s+(?:\w+\s+)?(\w+)\s*=\s*([^, )\n]+)", param_block, re.IGNORECASE):
+            info["parameters"].append({"name": pm.group(1).strip(), "value": pm.group(2).strip()})
+        # ports via parse helper
+        info["inputs"] = self._parse_port_list(port_block, "input")
+        info["outputs"] = self._parse_port_list(port_block, "output")
+        info["inouts"] = self._parse_port_list(port_block, "inout")
+        all_ports = info["inputs"] + info["outputs"] + info["inouts"]
+        for p in all_ports:
+            low = p["name"].lower()
+            if any(k in low for k in ["clk", "pclk", "clock", "aclk", "hclk"]) and not info["clock"]:
+                info["clock"] = p["name"]
+            if any(k in low for k in ["resetn", "presetn", "rst_n", "reset", "rst"]) and not info["reset"]:
+                info["reset"] = p["name"]
+        # widths from parameters
+        for prm in info["parameters"]:
+            ln = prm["name"].lower()
+            try:
+                val = int(eval(prm["value"]))
+            except Exception:
+                val = None
+            if val is None:
+                continue
+            if "addr" in ln:
+                info["addr_width"] = val
+            if "data" in ln:
+                info["data_width"] = val
+        low = cleaned.lower()
+        info["optional_apb"]["slverr"] = bool(re.search(r"\bpslverr\b", low))
+        info["optional_apb"]["pstrb"] = bool(re.search(r"\bpstrb\b", low))
+        info["optional_apb"]["pprot"] = bool(re.search(r"\bpprot\b", low))
+        info["is_sequential"] = bool(re.search(r"always\s*@\s*\(.*posedge", cleaned))
+        info["has_fsm"] = bool(re.search(r"\b(case|unique\s+case)\b", cleaned))
+        return info
+
+    def _parse_port_list(self, ports_str: str, direction: str) -> List[Dict[str, Any]]:
+        text = ports_str or ""
+        text = re.sub(r"//.*?$", "", text, flags=re.MULTILINE)
+        text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+        parts, cur, depth = [], "", 0
+        for ch in text:
+            if ch in "[{(":
+                depth += 1
+            elif ch in "]})":
+                depth -= 1 if depth > 0 else 0
+            if ch == "," and depth == 0:
+                if cur.strip():
+                    parts.append(cur.strip())
+                cur = ""
+            else:
+                cur += ch
+        if cur.strip():
+            parts.append(cur.strip())
+        results = []
+        dir_re = r"\b(input|output|inout)\b"
+        last_prefix = None
+        name_only_pat = re.compile(r"^\s*(\w+)\s*(\[[^\]]+\])?\s*$", flags=re.IGNORECASE)
+        for raw in parts:
+            piece = raw.strip()
+            has_direction = re.search(dir_re, piece) is not None
+            if has_direction:
+                last_prefix = piece
+                explicit_dir = re.search(dir_re, piece, flags=re.IGNORECASE).group(1).lower()
+                if explicit_dir != direction:
+                    continue
+                to_parse = piece
+            else:
+                if not last_prefix:
+                    continue
+                if not last_prefix.lower().startswith(direction):
+                    continue
+                to_parse = last_prefix + " " + piece
+            mo = name_only_pat.search(to_parse)
+            if mo:
+                name = mo.group(1)
+                rngs = re.findall(r"\[[^\]]+\]", to_parse)
+                packed = rngs[-1] if rngs else ""
+                w = self._width_from_range(packed)
+                results.append({"name": name, "width": w, "is_bus": w > 1, "range": packed})
+        return results
+
+    def _width_from_range(self, rng: str) -> int:
+        m = re.match(r"\[\s*(\d+)\s*:\s*(\d+)\s*\]", rng or "")
+        if not m:
+            return 1
+        msb, lsb = int(m.group(1)), int(m.group(2))
+        return abs(msb - lsb) + 1
+
+    # simplified builders
+    def _build_uvm_testbench(self, info: Dict[str, Any]) -> str:
+        mod = info.get('module_name', 'top')
+        params = info.get('parameters', [])
+        clk = info.get('clock') or 'clk'
+        rst = info.get('reset') or 'rst_n'
+        inputs = info.get('inputs', [])
+        outputs = info.get('outputs', [])
+        inouts = info.get('inouts', [])
+        addr_width = info.get('addr_width') or 32
+        data_width = info.get('data_width') or 32
+        tb = []
+        tb.append(f"// Auto-generated UVM-like TB for {mod}")
+        tb.append("`timescale 1ns/1ps")
+        tb.append("interface tb_if;")
+        tb.append(f"  parameter int ADDR_W = {addr_width};")
+        tb.append(f"  parameter int DATA_W = {data_width};")
+        tb.append(f"  logic {clk};")
+        tb.append(f"  logic {rst};")
+        ban = {clk, rst}
+        for p in inputs:
+            if p['name'] not in ban:
+                tb.append(f"  logic {p.get('range','')} {p['name']};")
+        for p in outputs:
+            if p['name'] not in ban:
+                tb.append(f"  logic {p.get('range','')} {p['name']};")
+        tb.append("endinterface: tb_if")
+        tb.append("\nmodule tb_top;")
+        tb.append("  tb_if tb_vif();")
+        tb.append(f"  always #5 tb_vif.{clk} = ~tb_vif.{clk};")
+        tb.append("  initial begin")
+        tb.append(f"    tb_vif.{clk} = 0;")
+        tb.append(f"    tb_vif.{rst} = 0;")
+        tb.append("    #20;")
+        tb.append(f"    tb_vif.{rst} = 1;")
+        tb.append("  end")
+        param_map = ""
+        if params:
+            param_map = "#(\n"
+            for p in params:
+                param_map += f"    .{p['name']}({p['name']}),\n"
+            param_map = param_map.rstrip(",\n") + "\n  ) "
+        seen = {clk, rst}
+        port_lines = [f".{clk}(tb_vif.{clk})", f".{rst}(tb_vif.{rst})"]
+        for p in inputs + outputs + inouts:
+            if p['name'] not in seen:
+                port_lines.append(f".{p['name']}(tb_vif.{p['name']})")
+                seen.add(p['name'])
+        port_map = ",\n    ".join(port_lines)
+        tb.append(f"  {mod} {param_map}uut (")
+        tb.append(f"    {port_map}")
+        tb.append("  );")
+        tb.append("endmodule: tb_top")
+        return "\n".join(tb)
+
+    def _build_comprehensive_testbench(self, info: Dict[str, Any]) -> str:
+        return self._build_uvm_testbench(info)
+
+    def _build_apb_testbench(self, info: Dict[str, Any], apb_signals: Dict[str, str]) -> str:
+        mod = info.get("module_name", "top_apb")
+        lines = [f"// APB-style TB skeleton for {mod}", f"// Detected signals: {', '.join(apb_signals.keys()) if apb_signals else 'none'}"]
+        lines.append(self._build_uvm_testbench(info))
+        return "\n".join(lines)
+
+    def _detect_apb_protocol(self, sample: str) -> Tuple[bool, Dict[str, str]]:
+        low = (sample or "").lower()
+        want = ["paddr", "psel", "pwrite", "pwdata", "prdata"]
+        signals = {}
+        found = False
+        for w in want:
+            if re.search(rf"\b{w}\b", low):
+                signals[w] = w
+                found = True
+        return found, signals
+
